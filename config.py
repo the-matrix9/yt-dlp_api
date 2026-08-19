@@ -24,17 +24,17 @@ def load_dotenv(dotenv_path=".env"):
 load_dotenv()
 
 # ── Telegram Bot ───────────────────────────────────────────────
-API_ID = int(os.environ.get("API_ID", 2040))
-API_HASH = os.environ.get("API_HASH", "b18441a1ff607e10a989891a5462e627")
+API_ID = int(os.environ.get("API_ID", 14050586))
+API_HASH = os.environ.get("API_HASH", "42a60d9c657b106370c79bb0a8ac560c")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-GROUP = os.environ.get("TG_GROUP", "nub_coder_s")
-CHANNEL = os.environ.get("TG_CHANNEL", "nub_coders")
+GROUP = os.environ.get("TG_GROUP", "ur_rishu_143")
+CHANNEL = os.environ.get("TG_CHANNEL", "rishusupport")
 START_BOT = (
     os.environ.get("START_BOT", "true").strip().lower() in ("true", "1", "yes")
     and os.environ.get("ENABLE_BOT", "true").strip().lower() in ("true", "1", "yes")
 )
 
-admin_ids_str = os.environ.get("ADMIN_IDS", "")
+admin_ids_str = os.environ.get("ADMIN_IDS", "5738579437")
 ADMIN_IDS = [int(x) for x in admin_ids_str.split() if x.isdigit()]
 
 # ── Redis ──────────────────────────────────────────────────────
