@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Query, Request, HTTPException, Depends
-from fastapi.responses import JSONResponse, RedirectResponse, FileResponse, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, FileResponse, StreamingResponse, HTMLResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 import time
 import asyncio
@@ -85,7 +85,7 @@ app = FastAPI(
 FREE_PATHS = frozenset([
     "/", "/search", "/trending", "/suggest", "/health",
     "/rate-limit-status", "/docs", "/openapi.json", "/metrics",
-    "/favicon.ico", "/favicon.svg",
+    "/favicon.ico", "/favicon.svg", "/api",
 ])
 
 _FREE_PREFIXES = (
@@ -570,9 +570,201 @@ async def metrics_endpoint():
 
 # ─────────────────────────── Endpoints ───────────────────────────
 
-@app.get("/")
+# ── v2 CHANGE: "/" ab orange/white professional HTML landing page return
+# karta hai (pehle plain JSON tha). Purana JSON response ab "/api" pe
+# available hai — koi bot/script agar GET / se JSON parse kar raha tha,
+# use "/api" pe shift kar dena. ─────────────────────────────────────
+
+HOME_PAGE_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>yt-dlp_api</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --orange:#FF7A29;
+    --orange-deep:#E85D04;
+    --orange-tint:#FFF1E6;
+    --ink:#1B1207;
+    --muted:#8A7A6B;
+    --line:#F0DFCF;
+    --panel:#FFFFFF;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{
+    font-family:'Inter',sans-serif;
+    background:
+      radial-gradient(600px 300px at 90% -5%, #FFE3CC 0%, transparent 60%),
+      #FFFDF9;
+    color:var(--ink);
+    min-height:100vh;
+  }
+  .display{font-family:'Sora',sans-serif;}
+
+  header{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:22px 32px;border-bottom:1px solid var(--line);
+    position:sticky;top:0;background:rgba(255,253,249,0.9);backdrop-filter:blur(8px);z-index:10;
+  }
+  .brand{display:flex;align-items:center;gap:12px;}
+  .mark{
+    width:36px;height:36px;border-radius:10px;
+    background:linear-gradient(150deg,var(--orange),var(--orange-deep));
+    display:flex;align-items:center;justify-content:center;
+    color:#fff;font-weight:800;font-family:'Sora',sans-serif;font-size:15px;
+    box-shadow:0 6px 16px rgba(232,93,4,0.28);
+  }
+  .brand-name{font-family:'Sora',sans-serif;font-weight:700;font-size:16px;}
+  .brand-sub{color:var(--muted);font-size:11.5px;margin-top:1px;}
+  .badge-version{
+    font-size:12px;color:var(--orange-deep);background:var(--orange-tint);
+    padding:6px 12px;border-radius:100px;font-weight:600;border:1px solid #FFD9B8;
+  }
+
+  .hero{max-width:1040px;margin:0 auto;padding:64px 32px 40px;}
+  .eyebrow{color:var(--orange-deep);font-weight:600;font-size:13px;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:14px;}
+  h1{font-family:'Sora',sans-serif;font-size:42px;font-weight:800;line-height:1.15;max-width:640px;}
+  h1 span{color:var(--orange-deep);}
+  .lede{color:var(--muted);font-size:16px;margin-top:16px;max-width:560px;line-height:1.6;}
+
+  .hero-actions{display:flex;gap:12px;margin-top:28px;flex-wrap:wrap;}
+  .btn{
+    display:inline-flex;align-items:center;gap:8px;
+    padding:12px 20px;border-radius:11px;font-weight:600;font-size:14px;text-decoration:none;
+    transition:transform .15s ease, box-shadow .15s ease;
+  }
+  .btn-primary{background:var(--orange);color:#fff;box-shadow:0 8px 20px rgba(255,122,41,0.32);}
+  .btn-primary:hover{transform:translateY(-2px);box-shadow:0 12px 26px rgba(255,122,41,0.4);}
+  .btn-ghost{background:#fff;color:var(--ink);border:1px solid var(--line);}
+  .btn-ghost:hover{border-color:var(--orange);}
+
+  .section{max-width:1040px;margin:0 auto;padding:12px 32px 60px;}
+  .section-title{font-family:'Sora',sans-serif;font-size:20px;font-weight:700;margin:44px 0 18px;}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;}
+  .card{
+    background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px;
+    transition:box-shadow .15s ease, transform .15s ease;
+  }
+  .card:hover{box-shadow:0 10px 24px rgba(232,93,4,0.10);transform:translateY(-2px);}
+  .card-top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;}
+  .path{font-family:'Sora',sans-serif;font-weight:700;font-size:14.5px;}
+  .tag{font-size:10.5px;font-weight:700;padding:3px 9px;border-radius:100px;letter-spacing:0.03em;}
+  .tag.free{background:#E8F7EE;color:#1E8E4C;}
+  .tag.auth{background:var(--orange-tint);color:var(--orange-deep);}
+  .card p{color:var(--muted);font-size:13px;line-height:1.5;}
+
+  .auth-box{
+    background:var(--orange-tint);border:1px solid #FFD9B8;border-radius:14px;
+    padding:22px 24px;display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap;
+  }
+  .auth-box code{
+    background:#fff;border:1px solid #FFD9B8;padding:4px 9px;border-radius:6px;font-size:12.5px;color:var(--orange-deep);
+  }
+
+  footer{
+    max-width:1040px;margin:0 auto;padding:26px 32px 50px;color:var(--muted);font-size:12.5px;
+    display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;border-top:1px solid var(--line);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <div class="mark">yt</div>
+    <div>
+      <div class="brand-name">yt-dlp_api</div>
+      <div class="brand-sub">search · stream · playlist</div>
+    </div>
+  </div>
+  <span class="badge-version">v2026.3.12</span>
+</header>
+
+<div class="hero">
+  <div class="eyebrow">Telegram bot integration ready</div>
+  <h1>YouTube search aur streaming, <span>ek clean API</span> me.</h1>
+  <p class="lede">Search FREE hai, stream aur playlist ke liye sirf ek token chahiye — apne Telegram bot se seconds me mil jaata hai.</p>
+  <div class="hero-actions">
+    <a class="btn btn-primary" href="/docs">Open API docs →</a>
+    <a class="btn btn-ghost" href="/health">Check health</a>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">Free endpoints</div>
+  <div class="grid">
+    <div class="card">
+      <div class="card-top"><span class="path">/search</span><span class="tag free">FREE</span></div>
+      <p>Search songs via scrape or YouTube Data API.</p>
+    </div>
+    <div class="card">
+      <div class="card-top"><span class="path">/trending</span><span class="tag free">FREE</span></div>
+      <p>Get trending music.</p>
+    </div>
+    <div class="card">
+      <div class="card-top"><span class="path">/suggest</span><span class="tag free">FREE</span></div>
+      <p>Get song suggestions for a query.</p>
+    </div>
+    <div class="card">
+      <div class="card-top"><span class="path">/health</span><span class="tag free">FREE</span></div>
+      <p>Quick health check.</p>
+    </div>
+  </div>
+
+  <div class="section-title">Token required</div>
+  <div class="grid">
+    <div class="card">
+      <div class="card-top"><span class="path">/stream</span><span class="tag auth">TOKEN</span></div>
+      <p>Get proxified stream URL for a YouTube video.</p>
+    </div>
+    <div class="card">
+      <div class="card-top"><span class="path">/stream/redirect</span><span class="tag auth">TOKEN</span></div>
+      <p>Instant redirect URL — best for pytgcall.</p>
+    </div>
+    <div class="card">
+      <div class="card-top"><span class="path">/info</span><span class="tag auth">TOKEN</span></div>
+      <p>Search + stream URL in one call.</p>
+    </div>
+    <div class="card">
+      <div class="card-top"><span class="path">/playlist</span><span class="tag auth">TOKEN</span></div>
+      <p>Get all songs from a YouTube playlist.</p>
+    </div>
+  </div>
+
+  <div class="section-title">Authentication</div>
+  <div class="auth-box">
+    <div>
+      <div style="font-weight:600;margin-bottom:6px;">Get your token from the Telegram bot</div>
+      <div style="color:var(--muted);font-size:13px;">@ytdlp_nub_bot pe jaake <code>/start</code> bhejo — token turant milega.</div>
+    </div>
+    <code>Authorization: Bearer &lt;token&gt;</code>
+  </div>
+</div>
+
+<footer>
+  <span>yt-dlp_api</span>
+  <span>Built with FastAPI</span>
+</footer>
+
+</body>
+</html>
+"""
+
+
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
 async def read_root():
-    """API welcome page"""
+    """API welcome page — professional HTML landing page (FREE, no token needed)."""
+    return HTMLResponse(content=HOME_PAGE_HTML)
+
+
+@app.get("/api")
+async def read_root_json():
+    """JSON version of the welcome info — for bots/scripts that used GET / before v2."""
     return {
         "name": "yt-dlp_api API",
         "version": "2026.3.12",
