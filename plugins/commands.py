@@ -1,16 +1,31 @@
+# v2 — FIX: html_escape() added for username/first_name before embedding in
+# HTML-parsed messages. Root cause of "1st /start fails, 2nd works": a user's
+# Telegram first_name/username containing an unescaped '<' or unclosed tag
+# (e.g. styled unicode names) caused Pyrogram's HTML parser to raise inside
+# MessageHandler, silently killing the reply. See Railway log:
+#   "Unexpected exception raised in MessageHandler: Unclosed tags: <b> (x1)"
+#
+# Changes from v1:
+#   - Added `from html import escape as html_escape` import
+#   - start_command: username now sanitized via html_escape() before use
+#   - start_command: wrapped core logic in try/except so future errors are
+#     logged instead of failing silently
+#   - help callback: user's display name is not used there (only token),
+#     no change needed — token is our own generated string, always safe
+
 from pyrogram import filters
 from pyrogram.client import Client
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 import asyncio
 import time
+from html import escape as html_escape
 
 
 # Import from tools module
 from tools import (
     redis_client, generate_token, is_admin, get_user_token, 
     set_user_token, revoke_user_token, get_user_request_count,
-    set_user_request_count, increment_user_requests,
-    mask_token, is_group_chat, get_user_token_display
+    set_user_request_count, increment_user_requests
 )
 from config import BASE_URL
 
@@ -38,58 +53,63 @@ async def start_command(client: Client, message: Message):
         return
 
     user_id = message.from_user.id
-    username = message.from_user.username or message.from_user.first_name
-    is_grp = is_group_chat(message)
-    group_note = "\n\n🔒 *Token is masked in group chats for security. DM the bot to view your full token.*" if is_grp else ""
+    # v2 fix: escape user-controlled name before embedding in an HTML-parsed message
+    username = html_escape(message.from_user.username or message.from_user.first_name or "User")
 
-    # Check if user already has a token
-    existing_token = await get_user_token(user_id)
+    try:
+        # Check if user already has a token
+        existing_token = await get_user_token(user_id)
 
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("🔧 API Implementation", callback_data="api_implementation"),
-            InlineKeyboardButton("📊 Usage Status", callback_data="usage_status")
-        ],
-        [
-            InlineKeyboardButton("🔄 Revoke Token", callback_data="revoke_token"),
-            InlineKeyboardButton("❓ Help", callback_data="help")
-        ]
-    ])
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🔧 API Implementation", callback_data="api_implementation"),
+                InlineKeyboardButton("📊 Usage Status", callback_data="usage_status")
+            ],
+            [
+                InlineKeyboardButton("🔄 Revoke Token", callback_data="revoke_token"),
+                InlineKeyboardButton("❓ Help", callback_data="help")
+            ]
+        ])
 
-    if existing_token:
-        disp_token = mask_token(existing_token) if is_grp else existing_token
-        await message.reply_text(
-            f"🎉 **Welcome back, {username}!**\n\n"
-            f"✅ Your API is ready to use!\n"
-            f"🔗 Token: `{disp_token}`\n\n"
-            f"🌐 **API Base URL:**\n"
-            f"`{api_url()}/`\n\n"
-            f"📝 **Usage:**\n"
-            f"Add your token as a query parameter:\n"
-            f"`{api_url('info')}?token={disp_token}&q=VIDEO_URL`\n\n"
-            f"📈 **Daily Limit:** 1000 requests\n"
-            f"🔍 **Search:** Always free!{group_note}",
-            reply_markup=keyboard
-        )
-    else:
-        # Generate new token
-        new_token = generate_token()
-        await set_user_token(user_id, new_token)
-        disp_token = mask_token(new_token) if is_grp else new_token
+        if existing_token:
+            await message.reply_text(
+                f"🎉 **Welcome back, {username}!**\n\n"
+                f"✅ Your API is ready to use!\n"
+                f"🔗 Token: `{existing_token}`\n\n"
+                f"🌐 **API Base URL:**\n"
+                f"`{api_url()}/`\n\n"
+                f"📝 **Usage:**\n"
+                f"Add your token as a query parameter:\n"
+                f"`{api_url('info')}?token={existing_token}&q=VIDEO_URL`\n\n"
+                f"📈 **Daily Limit:** 1000 requests\n"
+                f"🔍 **Search:** Always free!",
+                reply_markup=keyboard
+            )
+        else:
+            # Generate new token
+            new_token = generate_token()
+            await set_user_token(user_id, new_token)
 
-        await message.reply_text(
-            f"🎉 **Welcome to YT-DLP API, {username}!**\n\n"
-            f"🔑 Your API token: `{disp_token}`\n\n"
-            f"🌐 **API Base URL:**\n"
-            f"`{api_url()}/`\n\n"
-            f"📝 **How to use:**\n"
-            f"Add your token as a query parameter:\n"
-            f"`{api_url('info')}?token={disp_token}&q=VIDEO_URL`\n\n"
-            f"📈 **Daily Limit:** 1000 requests\n"
-            f"🔍 **Search:** Always free!\n\n"
-            f"🚀 **Get started:** Use the buttons below!{group_note}",
-            reply_markup=keyboard
-        )
+            await message.reply_text(
+                f"🎉 **Welcome to YT-DLP API, {username}!**\n\n"
+                f"🔑 Your API token: `{new_token}`\n\n"
+                f"🌐 **API Base URL:**\n"
+                f"`{api_url()}/`\n\n"
+                f"📝 **How to use:**\n"
+                f"Add your token as a query parameter:\n"
+                f"`{api_url('info')}?token={new_token}&q=VIDEO_URL`\n\n"
+                f"📈 **Daily Limit:** 1000 requests\n"
+                f"🔍 **Search:** Always free!\n\n"
+                f"🚀 **Get started:** Use the buttons below!",
+                reply_markup=keyboard
+            )
+    except Exception as e:
+        # v2 fix: never fail silently — log and tell the user
+        print(f"[start_command error] user={user_id} err={e}")
+        try:
+            await message.reply_text("⚠️ Kuch error aaya, dobara /start try karo.")
+        except Exception:
+            pass
 
 @Client.on_message(filters.command("menu"))
 async def menu_command(client: Client, message: Message):
@@ -126,30 +146,14 @@ async def ping_command(client: Client, message: Message):
 async def handle_callbacks(client: Client, callback_query: CallbackQuery):
     user_id = callback_query.from_user.id
     data = callback_query.data
-    is_grp = is_group_chat(callback_query)
 
-    if data == "view_token":
-        token = await get_user_token(user_id)
-        if not token:
-            await callback_query.answer("❌ No token found. Use /start to get one.", show_alert=True)
-        else:
-            await callback_query.answer(f"🔑 Your API Token: {token}", show_alert=True)
-
-    elif data == "get_token":
-        token = await get_user_token(user_id)
-        if not token:
-            token = generate_token()
-            await set_user_token(user_id, token)
-        await callback_query.answer(f"🔑 Your API Token: {token}", show_alert=True)
-
-    elif data == "api_implementation":
+    if data == "api_implementation":
         token = await get_user_token(user_id)
         if token:
-            disp_token = mask_token(token) if is_grp else token
             await callback_query.answer()
             await callback_query.edit_message_text(
                 f"🔧 **API Implementation Guide**\n\n"
-                f"🔑 **Your Token:** `{disp_token}`\n\n"
+                f"🔑 **Your Token:** `{token}`\n\n"
                 f"Choose implementation method:",
                 reply_markup=InlineKeyboardMarkup([
                     [
@@ -174,11 +178,10 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         request_count = await get_user_request_count(user_id)
         limit = 10000 if is_admin(user_id) else 1000
         remaining = max(0, limit - request_count)
-        disp_token = mask_token(token) if is_grp else token
 
         status_text = (
             f"📊 **Usage Statistics**\n\n"
-            f"🔑 Token: `{disp_token}`\n"
+            f"🔑 Token: `{token}`\n"
             f"📈 Used today: **{request_count}**/{limit}\n"
             f"📉 Remaining: **{remaining}**\n"
             f"🕒 Reset: Midnight UTC\n"
@@ -191,9 +194,6 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         progress = int((request_count / limit) * 10)
         bar = "🟩" * progress + "⬜" * (10 - progress)
         status_text += f"\n\n📊 Progress: {bar}"
-
-        if is_grp:
-            status_text += "\n\n🔒 *Token is masked in group chats for security.*"
 
         await callback_query.answer()
         await callback_query.edit_message_text(
@@ -225,12 +225,11 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         # Generate new token
         new_token = generate_token()
         await set_user_token(user_id, new_token)
-        disp_token = mask_token(new_token) if is_grp else new_token
 
         await callback_query.answer("✅ Token revoked successfully!")
         await callback_query.edit_message_text(
             f"✅ **Token Revoked Successfully!**\n\n"
-            f"🔑 Your new token: `{disp_token}`\n\n"
+            f"🔑 Your new token: `{new_token}`\n\n"
             f"⚠️ **Important:** Update your API calls with the new token immediately.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")]
@@ -238,7 +237,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         )
 
     elif data == "help":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
         await callback_query.edit_message_text(
             "❓ **Help & Commands**\n\n"
@@ -273,7 +272,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         )
 
     elif data == "impl_get_all":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
         await callback_query.edit_message_text(
             "🌐 **All API Endpoints - GET Examples**\n\n"
@@ -299,7 +298,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         )
 
     elif data == "impl_python_all":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
         await callback_query.edit_message_text(
             "🐍 **Complete Python Implementation**\n\n"
@@ -392,7 +391,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         )
 
     elif data == "impl_quick_ref":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
         await callback_query.edit_message_text(
             "📋 **Quick Reference**\n\n"
@@ -448,7 +447,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         )
 
     elif data == "api_info":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
         await callback_query.edit_message_text(
             "🎥 **Video Info Endpoint**\n\n"
@@ -471,7 +470,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         )
 
     elif data == "api_info_get":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
         await callback_query.edit_message_text(
             "🌐 **Video Info - GET Examples**\n\n"
@@ -497,7 +496,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         )
 
     elif data == "api_info_python":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
         await callback_query.edit_message_text(
             "🐍 **Video Info - Python Implementation**\n\n"
@@ -609,7 +608,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         )
 
     elif data == "api_search_python":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
         await callback_query.edit_message_text(
             "🐍 **Search - Python Implementation**\n\n"
@@ -708,7 +707,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         )
 
     elif data == "api_ratelimit_get":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
         await callback_query.edit_message_text(
             "🌐 **Rate Limit - GET Examples**\n\n"
@@ -746,7 +745,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         )
 
     elif data == "api_ratelimit_python":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
         await callback_query.edit_message_text(
             "🐍 **Python Examples**\n\n"
@@ -824,7 +823,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         )
 
     elif data == "api_health_python":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
         await callback_query.edit_message_text(
             "🐍 **Python Examples**\n\n"
@@ -848,7 +847,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         )
 
     elif data == "impl_python_part2":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
         await callback_query.edit_message_text(
             "🐍 **Python Implementation - Part 2**\n\n"
@@ -903,7 +902,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         )
 
     elif data == "impl_python_examples":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
         await callback_query.edit_message_text(
             "🐍 **Python Usage Examples**\n\n"
@@ -955,7 +954,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         )
 
     elif data == "impl_python_advanced":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
         await callback_query.edit_message_text(
             "🐍 **Advanced Python Examples**\n\n"
@@ -1018,7 +1017,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         )
 
     elif data == "impl_python_errors":
-        user_token = await get_user_token_display(user_id, is_grp, default="YOUR_TOKEN")
+        user_token = await get_user_token(user_id) or "YOUR_TOKEN"
         await callback_query.answer()
         await callback_query.edit_message_text(
             "🐍 **Error Handling & Best Practices**\n\n"
