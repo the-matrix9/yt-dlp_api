@@ -46,15 +46,26 @@ async def lifespan(app: FastAPI):
     # ponytail: with --workers>1 in ONE container the workers race on cookies.txt;
     # recommended scaling is WEB_CONCURRENCY=1 + multiple replicas (each writes its
     # own container-local file). Bump to a file lock only if you must run N>1 in one box.
+    #
+    # Cookies are optional (extraction runs anonymously by default), so this is a
+    # best-effort background step: the browser probe shells out to yt-dlp and can take
+    # up to 60s per browser, which must never delay startup or /health.
     if not _os.getenv("TESTING"):
         try:
             from utils.logging_config import setup_json_logging
             setup_json_logging()
-            from utils.cookies import bootstrap as bootstrap_cookies, start_refresh
-            bootstrap_cookies()
-            start_refresh()
+
+            def _cookie_bootstrap():
+                try:
+                    from utils.cookies import bootstrap as bootstrap_cookies, start_refresh
+                    bootstrap_cookies()
+                    start_refresh()
+                except Exception as e:
+                    logging.warning(f"[STARTUP] Cookie bootstrap skipped: {e}")
+
+            threading.Thread(target=_cookie_bootstrap, daemon=True).start()
         except Exception as e:
-            logging.error(f"[STARTUP] Cookie bootstrap failed: {e}")
+            logging.warning(f"[STARTUP] Logging/cookie init skipped: {e}")
     yield
     # Release the Innertube fast-path connection pool on shutdown.
     try:
@@ -404,7 +415,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 def clean_type_name(annotation) -> str:
     if annotation == inspect.Parameter.empty:
         return "any"
-    
+
     # Handle typing wrappers like Optional, Union, etc.
     origin = getattr(annotation, "__origin__", None)
     if origin is not None:
@@ -414,7 +425,7 @@ def clean_type_name(annotation) -> str:
             return clean_type_name(non_none_args[0])
         elif len(non_none_args) > 1:
             return " | ".join(clean_type_name(arg) for arg in non_none_args)
-            
+
     name = getattr(annotation, "__name__", str(annotation))
     if name == "str":
         return "string"
@@ -430,7 +441,7 @@ def clean_type_name(annotation) -> str:
 def get_endpoint_args(route: APIRoute):
     required_args = {}
     optional_args = {}
-    
+
     sig = inspect.signature(route.endpoint)
     for name, param in sig.parameters.items():
         # Skip internal parameter types like Request or Response
@@ -439,15 +450,15 @@ def get_endpoint_args(route: APIRoute):
         # Skip dependencies
         if isinstance(param.default, DependsParam):
             continue
-            
+
         param_type = clean_type_name(param.annotation)
         description = ""
         param_in = "query"
-        
+
         # Check if it's a path parameter
         if f"{{{name}}}" in route.path:
             param_in = "path"
-            
+
         if isinstance(param.default, FieldInfo):
             is_req = param.default.is_required()
             default_val = param.default.default
@@ -455,7 +466,7 @@ def get_endpoint_args(route: APIRoute):
             if default_val == ... or default_val.__class__.__name__ == "PydanticUndefined":
                 default_val = None
             description = param.default.description or ""
-            
+
             # Determine location from FieldInfo type
             from fastapi.params import Query, Path, Header, Cookie, Body
             if isinstance(param.default, Path):
@@ -478,20 +489,20 @@ def get_endpoint_args(route: APIRoute):
         }
         if description:
             info["description"] = description
-            
+
         if is_req:
             required_args[name] = info
         else:
             info["default"] = default_val
             optional_args[name] = info
-            
+
     return required_args, optional_args
 
 
 def get_arguments_for_request(request: Request):
     required_args = {}
     optional_args = {}
-    
+
     route = request.scope.get("route")
     if not route:
         for r in request.app.routes:
@@ -499,17 +510,17 @@ def get_arguments_for_request(request: Request):
             if match == Match.FULL:
                 route = r
                 break
-                
+
     if route and isinstance(route, APIRoute):
         required_args, optional_args = get_endpoint_args(route)
-        
+
     return required_args, optional_args
 
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     required_args, optional_args = get_arguments_for_request(request)
-    
+
     return JSONResponse(
         status_code=422,
         content=jsonable_encoder({
