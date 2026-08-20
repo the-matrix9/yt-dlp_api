@@ -64,7 +64,7 @@ COOKIES_BOOTSTRAP_URL = os.environ.get(
 COOKIES_REFRESH_HOURS = float(os.environ.get("COOKIES_REFRESH_HOURS", 6))
 
 # ── Deployment Host & Base URL ─────────────────────────────────
-API_HOST = os.environ.get("API_HOST", "api.nubcoders.com")
+API_HOST = os.environ.get("API_HOST", "Vapters.site")
 BASE_URL = os.environ.get("BASE_URL", f"https://{API_HOST}").rstrip("/")
 
 # ── Optional: Official YouTube Data API keys ────────────────────
